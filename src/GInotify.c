@@ -224,7 +224,7 @@ g_inotify_new ()
       g_warning ("Error Setting up encoding for gio channel: %s\n", err->message);
       g_error_free (err);
     }
-  g_print ("%#010x\n", IN_MOVE_SELF);
+
   g_io_add_watch (priv->gio, G_IO_IN, on_fd_input, g_inotify);
 
   return g_inotify;
