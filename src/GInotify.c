@@ -20,6 +20,7 @@ struct _GInotifyPrivate
 {
   gint fd;
   GIOChannel *gio;
+  gboolean single_event_mode;
 };
 
 enum
@@ -28,82 +29,96 @@ enum
   F_CHANGE,
   F_NOCHANGE,
   INF_GEN,
+  EVENT_Q,
   LAST_SIGNAL
 };
 
 static guint g_inotify_signals [LAST_SIGNAL] = { 0 };
 
 /* Uitls */
-static void
-g_inotify_emit (const gchar* name,
-                gint wd,
-                unsigned int event,
-                unsigned int cookie,
-                GInotify* self)
+
+static GInotifyEvent*
+g_new_ginotify_event (const gchar* name,
+                      gint wd,
+                      unsigned int event,
+                      unsigned int cookie,
+                      GInotify* self)
 {
   GInotifyEvent *ev = (GInotifyEvent*) g_malloc0 (sizeof (GInotifyEvent));
-  gboolean isdir =  (event & IN_ISDIR) ? TRUE : FALSE;
-
+  
   ev->wd = wd;
   ev->name = (name) ? g_string_new(name) : NULL;
   ev->isdir = (event & IN_ISDIR) ? TRUE : FALSE;
   ev->cookie = cookie;
-  ev->type = 0;
+  ev->what = 0;
 
-  if (event & (IN_MOVED_FROM | IN_MOVED_TO | IN_DELETE | IN_CREATE))
-    {
-      ev->type = (event & IN_MOVED_FROM) ? G_IN_MOVED_FROM : ev->type;
-      ev->type = (event & IN_MOVED_TO) ? G_IN_MOVED_TO : ev->type;
-      ev->type = (event & IN_DELETE) ? G_IN_DELETE : ev->type;
-      ev->type = (event & IN_CREATE) ? G_IN_CREATE : ev->type;
+  ev->what = (event & IN_MOVED_FROM) ? G_IN_MOVED_FROM : ev->what;
+  ev->what = (event & IN_MOVED_TO) ? G_IN_MOVED_TO : ev->what;
+  ev->what = (event & IN_DELETE) ? G_IN_DELETE : ev->what;
+  ev->what = (event & IN_CREATE) ? G_IN_CREATE : ev->what;
+  ev->what = (event & IN_ATTRIB) ? G_IN_ATTRIB : ev->what;
+  ev->what = (event & IN_MODIFY) ? G_IN_MODIFY : ev->what;
+  ev->what = (event & IN_MOVE_SELF) ? G_IN_MOVE_SELF : ev->what;
+  ev->what = (event & IN_DELETE_SELF) ? G_IN_DELETE_SELF : ev->what;
+  ev->what = (event & IN_CLOSE_WRITE) ? G_IN_CLOSE_WRITE : ev->what;
+  ev->what = (event & IN_CLOSE_NOWRITE) ? G_IN_CLOSE_NOWRITE : ev->what;
+  ev->what = (event & IN_OPEN) ? G_IN_OPEN : ev->what;
+  ev->what = (event & IN_ACCESS) ? G_IN_ACCESS : ev->what;
+  ev->what = (event & IN_UNMOUNT) ? G_IN_UNMOUNT : ev->what;
+  ev->what = (event & IN_Q_OVERFLOW) ? G_IN_Q_OVERFLOW : ev->what;
+  ev->what = (event & IN_IGNORED) ? G_IN_IGNORED : ev->what;
 
-      g_signal_emit (self, g_inotify_signals[DIR_SPEC], 0, (gpointer) ev);
-      if (ev->name)
+  return ev;
+}
+
+
+static void
+g_destroy_event (gpointer data)
+{
+  GInotifyEvent *ev = (GInotifyEvent*) data;
+  if (ev->name)
         g_string_free (ev->name, TRUE);
       g_free(ev);
+}
+
+static void
+g_inotify_emit (GInotifyEvent *event, GInotify* self)
+{
+  if (event->what & (IN_MOVED_FROM | IN_MOVED_TO | IN_DELETE | IN_CREATE))
+    {
+      g_signal_emit (self, g_inotify_signals[DIR_SPEC], 0, (gpointer) event);
+      g_destroy_event (event);
       return;
     }
 
-  if (event & (IN_ATTRIB | IN_MODIFY | IN_MOVE_SELF | IN_DELETE_SELF))
+  if (event->what & (IN_ATTRIB | IN_MODIFY | IN_MOVE_SELF | IN_DELETE_SELF))
     {
-      ev->type = (event & IN_ATTRIB) ? G_IN_ATTRIB : ev->type;
-      ev->type = (event & IN_MODIFY) ? G_IN_MODIFY : ev->type;
-      ev->type = (event & IN_MOVE_SELF) ? G_IN_MOVE_SELF : ev->type;
-      ev->type = (event & IN_DELETE_SELF) ? G_IN_DELETE_SELF : ev->type;
-
-      g_signal_emit (self, g_inotify_signals[F_CHANGE], 0, (gpointer) ev);
-      if (ev->name)
-        g_string_free (ev->name, TRUE);
-      g_free(ev);
+      g_signal_emit (self, g_inotify_signals[F_CHANGE], 0, (gpointer) event);
+      g_destroy_event (event);
       return;
     }
 
-  if (event & (IN_CLOSE_WRITE | IN_CLOSE_NOWRITE | IN_OPEN | IN_ACCESS))
+  if (event->what & (IN_CLOSE_WRITE | IN_CLOSE_NOWRITE | IN_OPEN | IN_ACCESS))
     {
-      ev->type = (event & IN_CLOSE_WRITE) ? G_IN_CLOSE_WRITE : ev->type;
-      ev->type = (event & IN_CLOSE_NOWRITE) ? G_IN_CLOSE_NOWRITE : ev->type;
-      ev->type = (event & IN_OPEN) ? G_IN_OPEN : ev->type;
-      ev->type = (event & IN_ACCESS) ? G_IN_ACCESS : ev->type;
-
-      g_signal_emit (self, g_inotify_signals[F_NOCHANGE], 0, (gpointer) ev);
-      if (ev->name)
-        g_string_free (ev->name, TRUE);
-      g_free(ev);
+      g_signal_emit (self, g_inotify_signals[F_NOCHANGE], 0, (gpointer) event);
+      g_destroy_event (event);
       return;
     }
 
-  if (event & (IN_UNMOUNT | IN_Q_OVERFLOW | IN_IGNORED))
+  if (event->what & (IN_UNMOUNT | IN_Q_OVERFLOW | IN_IGNORED))
     {
-      ev->type = (event & IN_UNMOUNT) ? G_IN_UNMOUNT : ev->type;
-      ev->type = (event & IN_Q_OVERFLOW) ? G_IN_Q_OVERFLOW : ev->type;
-      ev->type = (event & IN_IGNORED) ? G_IN_IGNORED : ev->type;
-
-      g_signal_emit (self, g_inotify_signals[INF_GEN], 0, (gpointer) ev);
-      if (ev->name)
-        g_string_free (ev->name, TRUE);
-      g_free(ev);
+      g_signal_emit (self, g_inotify_signals[INF_GEN], 0, (gpointer) event);
+      g_destroy_event (event);
       return;
     }
+}
+
+static void
+g_inotify_emit_q (GList *list, GInotify* self)
+{
+  list = g_list_first (list);
+  g_signal_emit (self, g_inotify_signals[EVENT_Q], 0, (gpointer) list);
+  g_list_free_full (list, (GDestroyNotify) g_destroy_event);
 }
 
 /* Callbacks */
@@ -115,6 +130,8 @@ on_fd_input (GIOChannel *gio, GIOCondition condition, gpointer data)
   GError *err = NULL;
   gsize len = 0;
   guint i = 0;
+  GInotifyEvent *ev;
+  GList *list;
 
   /* read in as many pending events as we can */
   g_io_channel_read_chars (gio, buf, INOTIFY_BUF, &len, &err);
@@ -124,21 +141,43 @@ on_fd_input (GIOChannel *gio, GIOCondition condition, gpointer data)
       return FALSE;
     }
 
-  /* reconstruct each event and fire a signal for that event */
-  while (i < len)
+  if (self->priv->single_event_mode)
     {
-      const char *name = NULL;
-      struct inotify_event *event;
+      /* reconstruct each event and emit a signal for that event */
+      while (i < len)
+        {
+          const char *name = NULL;
+          struct inotify_event *event;
 
-      event = (struct inotify_event *) &buf[i];
-      if (event->len)
-        name = &buf[i] + sizeof (struct inotify_event);
+          event = (struct inotify_event *) &buf[i];
+          if (event->len)
+            name = &buf[i] + sizeof (struct inotify_event);
 
-      g_inotify_emit (name, event->wd, event->mask, event->cookie, self);
+          ev = g_new_ginotify_event (name, event->wd, event->mask, event->cookie, self);
+          g_inotify_emit (ev, self);
 
-
-      i += sizeof (struct inotify_event) + event->len;
+          i += sizeof (struct inotify_event) + event->len;
+        }
     }
+  else
+    {
+    /* generate a new GInotifyEvent for each inotify event and emit a signal with the list */
+    while (i < len)
+      {
+        const char *name = NULL;
+        struct inotify_event *event;
+
+        event = (struct inotify_event *) &buf[i];
+        if (event->len)
+          name = &buf[i] + sizeof (struct inotify_event);
+
+        ev = g_new_ginotify_event (name, event->wd, event->mask, event->cookie, self);
+        list = g_list_append (list, (gpointer) ev);
+
+        i += sizeof (struct inotify_event) + event->len;
+      }
+    g_inotify_emit_q (list, self);
+  }
 
   return TRUE;
 }
@@ -172,6 +211,12 @@ g_inotify_add_watch (GInotify *g_inf, const gchar *name, guint32 mask)
     }
 
   return wd;
+}
+
+void
+g_inotify_single_ev (GInotify *g_inf, gboolean single_ev)
+{//Untested!!
+  g_inf->priv->single_event_mode = single_ev;
 }
 
 static void
@@ -240,6 +285,7 @@ g_inotify_init (GInotify *self)
 
   priv->fd = 0;
   priv->gio = NULL;
+  priv->single_event_mode = TRUE;
 }
 
 static void
@@ -277,6 +323,13 @@ g_inotify_class_init (GInotifyClass *klass)
 
   g_inotify_signals[INF_GEN] =
     g_signal_new ("inotify-general",
+                  G_TYPE_FROM_CLASS (object_class), G_SIGNAL_RUN_FIRST,
+                  0, NULL, NULL,
+                  g_cclosure_marshal_VOID__POINTER,
+                  G_TYPE_NONE, 1, G_TYPE_POINTER);
+
+  g_inotify_signals[EVENT_Q] =
+    g_signal_new ("event-queue",
                   G_TYPE_FROM_CLASS (object_class), G_SIGNAL_RUN_FIRST,
                   0, NULL, NULL,
                   g_cclosure_marshal_VOID__POINTER,

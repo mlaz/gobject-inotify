@@ -42,18 +42,18 @@ struct _GInotifyClass
 /* used by G_TYPE_INOTIFY */
 GType g_inotify_get_type (void);
 
-/* Option and event mask macros */
+/* GInotifyEvent*/
 
 typedef struct GInotifyEvent
 {
   guint wd;
-  guint32 type;
+  guint32 what;
   gboolean isdir;
   guint32 cookie;
   GString *name;
 } GInotifyEvent;
 
-
+/* Option and event mask macros */
 
 #define G_IN_ACCESS		0x00000001	/* File was accessed */
 #define G_IN_MODIFY		0x00000002	/* File was modified */
